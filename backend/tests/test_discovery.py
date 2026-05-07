@@ -1,42 +1,118 @@
+"""
+Tests for Google Places discovery service.
+All HTTP calls are mocked.
+"""
 import pytest
-from unittest.mock import AsyncMock, patch
-from app.services.discovery.google_places import search_businesses
+from unittest.mock import AsyncMock, MagicMock, patch
 
-@pytest.mark.asyncio
-async def test_search_businesses_returns_list():
-    mock_response = {
-        "places": [
-            {
-                "displayName": {"text": "Acme HVAC"},
-                "formattedAddress": "123 Main St, Dallas, TX 75201",
-                "nationalPhoneNumber": "214-555-1234",
-                "websiteUri": "https://acmehvac.com",
-                "rating": 4.5,
-                "userRatingCount": 87,
-                "primaryTypeDisplayName": {"text": "HVAC contractor"},
-            }
-        ]
+
+def _mock_places_response(places: list[dict]) -> dict:
+    return {"places": places}
+
+
+def _make_place(name="Acme HVAC", status="OPERATIONAL", has_website=True) -> dict:
+    place = {
+        "displayName": {"text": name},
+        "formattedAddress": "123 Main St, Dallas, TX 75201",
+        "nationalPhoneNumber": "214-555-1234",
+        "rating": 4.5,
+        "userRatingCount": 87,
+        "primaryTypeDisplayName": {"text": "HVAC contractor"},
+        "businessStatus": status,
     }
-    with patch("httpx.AsyncClient.post", new_callable=AsyncMock) as mock_post:
-        mock_post.return_value.json = lambda: mock_response
-        mock_post.return_value.raise_for_status = lambda: None
-        results = await search_businesses(query="HVAC contractor", city="Dallas", state="TX")
-    assert len(results) == 1
-    assert results[0]["name"] == "Acme HVAC"
-    assert results[0]["phone"] == "214-555-1234"
+    if has_website:
+        place["websiteUri"] = "https://acmehvac.com"
+    return place
+
 
 @pytest.mark.asyncio
-async def test_website_scraper_extracts_data():
-    from app.services.enrichment.website_scraper import scrape_company_website
-    html = """<html><body>
-        <p>Founded in 1998, Acme HVAC has served Dallas for over 25 years.</p>
-        <p>Our team of 45 technicians is led by owner John Smith.</p>
-        <meta name="description" content="Dallas HVAC contractor since 1998">
-    </body></html>"""
-    with patch("httpx.AsyncClient.get") as mock_get:
-        mock_get.return_value.__aenter__ = AsyncMock(return_value=mock_get.return_value)
-        mock_get.return_value.__aexit__ = AsyncMock(return_value=False)
-        mock_get.return_value.text = html
-        mock_get.return_value.status_code = 200
-        result = await scrape_company_website("https://acmehvac.com")
-    assert result["founded_year"] == 1998
+async def test_search_returns_list_of_dicts():
+    from app.services.discovery.google_places import search_businesses
+    with patch("httpx.AsyncClient") as MockClient:
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = _mock_places_response([_make_place()])
+        mock_resp.raise_for_status = MagicMock()
+        MockClient.return_value.__aenter__ = AsyncMock(return_value=MockClient.return_value)
+        MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+        MockClient.return_value.post = AsyncMock(return_value=mock_resp)
+        results = await search_businesses("HVAC", "Dallas", "TX")
+    assert isinstance(results, list)
+    assert len(results) == 1
+
+
+@pytest.mark.asyncio
+async def test_search_extracts_required_fields():
+    from app.services.discovery.google_places import search_businesses
+    with patch("httpx.AsyncClient") as MockClient:
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = _mock_places_response([_make_place("Best HVAC Co")])
+        mock_resp.raise_for_status = MagicMock()
+        MockClient.return_value.__aenter__ = AsyncMock(return_value=MockClient.return_value)
+        MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+        MockClient.return_value.post = AsyncMock(return_value=mock_resp)
+        results = await search_businesses("HVAC", "Dallas", "TX")
+    r = results[0]
+    assert r["name"] == "Best HVAC Co"
+    assert r["phone"] == "214-555-1234"
+    assert r["google_rating"] == 4.5
+    assert r["google_review_count"] == 87
+    assert r["industry_description"] == "HVAC contractor"
+    assert r["hq_city"] == "Dallas"
+    assert r["hq_state"] == "TX"
+    assert r["domain"] == "acmehvac.com"
+
+
+@pytest.mark.asyncio
+async def test_search_filters_closed_businesses():
+    from app.services.discovery.google_places import search_businesses
+    places = [
+        _make_place("Open Co", status="OPERATIONAL"),
+        _make_place("Closed Co", status="CLOSED_PERMANENTLY"),
+    ]
+    with patch("httpx.AsyncClient") as MockClient:
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = _mock_places_response(places)
+        mock_resp.raise_for_status = MagicMock()
+        MockClient.return_value.__aenter__ = AsyncMock(return_value=MockClient.return_value)
+        MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+        MockClient.return_value.post = AsyncMock(return_value=mock_resp)
+        results = await search_businesses("HVAC", "Dallas", "TX")
+    assert len(results) == 1
+    assert results[0]["name"] == "Open Co"
+
+
+@pytest.mark.asyncio
+async def test_search_handles_no_website():
+    from app.services.discovery.google_places import search_businesses
+    with patch("httpx.AsyncClient") as MockClient:
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = _mock_places_response([_make_place(has_website=False)])
+        mock_resp.raise_for_status = MagicMock()
+        MockClient.return_value.__aenter__ = AsyncMock(return_value=MockClient.return_value)
+        MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+        MockClient.return_value.post = AsyncMock(return_value=mock_resp)
+        results = await search_businesses("HVAC", "Dallas", "TX")
+    assert results[0]["domain"] is None
+    assert results[0]["website"] == ""
+
+
+@pytest.mark.asyncio
+async def test_search_returns_empty_on_no_places():
+    from app.services.discovery.google_places import search_businesses
+    with patch("httpx.AsyncClient") as MockClient:
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {}
+        mock_resp.raise_for_status = MagicMock()
+        MockClient.return_value.__aenter__ = AsyncMock(return_value=MockClient.return_value)
+        MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+        MockClient.return_value.post = AsyncMock(return_value=mock_resp)
+        results = await search_businesses("HVAC", "Dallas", "TX")
+    assert results == []
+
+
+def test_domain_extraction():
+    from app.services.discovery.google_places import _extract_domain
+    assert _extract_domain("https://www.acmehvac.com/about") == "acmehvac.com"
+    assert _extract_domain("http://acmeplumbing.com") == "acmeplumbing.com"
+    assert _extract_domain("") is None
+    assert _extract_domain(None) is None

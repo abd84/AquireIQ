@@ -16,8 +16,8 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className="h-full bg-gray-50 antialiased">
-      <body className={`${inter.className} h-full`}>
+    <html lang="en" className="min-h-screen bg-slate-50 antialiased">
+      <body className={`${inter.className} min-h-screen`}>
         <SidebarLayout>{children}</SidebarLayout>
       </body>
     </html>

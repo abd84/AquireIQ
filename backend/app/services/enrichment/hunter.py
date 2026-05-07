@@ -6,6 +6,8 @@ HUNTER_BASE = "https://api.hunter.io/v2"
 
 @retry(stop=stop_after_attempt(2), wait=wait_exponential(min=1, max=5))
 async def find_owner_email(domain: str) -> dict:
+    if not domain or not settings.hunter_api_key:
+        return {}
     params = {"domain": domain, "api_key": settings.hunter_api_key, "limit": 10}
     async with httpx.AsyncClient(timeout=15.0) as client:
         resp = await client.get(f"{HUNTER_BASE}/domain-search", params=params)
@@ -32,7 +34,7 @@ def _find_best_owner_email(emails: list[dict]) -> dict | None:
     return emails[0] if emails else None
 
 def _build_name(email_data: dict) -> str | None:
-    first = email_data.get("first_name", "")
-    last = email_data.get("last_name", "")
+    first = email_data.get("first_name") or ""
+    last = email_data.get("last_name") or ""
     name = f"{first} {last}".strip()
     return name or None

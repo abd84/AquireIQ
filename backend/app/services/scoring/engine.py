@@ -47,7 +47,7 @@ def _score_financial_fit(c: dict) -> float:
         score += 1
 
     # Industry multiple (8 pts)
-    multiple, _, _ = get_industry_profile(c.get("naics_code"))
+    multiple, _, _ = get_industry_profile(c.get("naics_code"), c.get("industry_description"))
     score += multiple_to_score(multiple)
 
     # Business age (7 pts)
@@ -68,7 +68,7 @@ def _score_financial_fit(c: dict) -> float:
 def _score_operational(c: dict) -> float:
     score = 0.0
     # Asset-light (7 pts)
-    _, _, is_asset_light = get_industry_profile(c.get("naics_code"))
+    _, _, is_asset_light = get_industry_profile(c.get("naics_code"), c.get("industry_description"))
     score += 7 if is_asset_light else 3
 
     # Stable (not hypergrowth) — use review growth proxy (8 pts)
@@ -98,39 +98,36 @@ def _score_operational(c: dict) -> float:
 
 def _score_owner_exit(c: dict) -> float:
     score = 0.0
-    # Founding officer still present (10 pts)
-    if c.get("founding_officer_still_present"):
-        score += 10
-    elif c.get("incorporation_date"):
+    founded = c.get("founded_year")
+    age = (CURRENT_YEAR - founded) if founded else 0
+
+    # Business age heavily dictates the likelihood of the owner looking to retire (14 pts)
+    # This acts as the proxy for "founding_officer_still_present" logic
+    if age >= 25:
+        score += 14
+    elif age >= 15:
+        score += 9
+    elif age >= 10:
         score += 4
 
-    # No management succession (5 pts)
-    officer_count = c.get("officer_count") or 1
-    if officer_count <= 2:
-        score += 5
-    elif officer_count <= 4:
-        score += 2
-
-    # Owner email is owner@ style (3 pts) — key-man signal
+    # Owner email is owner@ style (5 pts) — key-man signal
     email = (c.get("owner_email") or "").lower()
     if any(kw in email for kw in ["owner", "founder", "info", "admin"]):
-        score += 3
+        score += 5
     elif email:
-        score += 1
-
-    # Business age > 20 yrs bonus (7 pts)
-    founded = c.get("founded_year")
-    if founded and (CURRENT_YEAR - founded) >= 20:
-        score += 7
-    elif founded and (CURRENT_YEAR - founded) >= 15:
-        score += 4
+        score += 2
+        
+    # Name conventions (e.g. "John's Plumbing" usually signals a direct owner-operator) (6 pts)
+    name = (c.get("name") or "").lower()
+    if "'" in name or " & " in name or " and " in name or "sons" in name or "brothers" in name: 
+        score += 6
 
     return min(score, 25)
 
 def _score_market(c: dict) -> float:
     score = 0.0
     # Fragmented industry (6 pts)
-    _, is_fragmented, _ = get_industry_profile(c.get("naics_code"))
+    _, is_fragmented, _ = get_industry_profile(c.get("naics_code"), c.get("industry_description"))
     score += 6 if is_fragmented else 2
 
     # Strong local brand (4 pts)

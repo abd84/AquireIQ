@@ -24,13 +24,14 @@ async def scrape_company_website(url: str) -> dict:
 
     result = {}
 
-    # Founded year
+    # Founded year — try explicit pattern first, fall back to earliest plausible year mention
     founded_match = FOUNDED_PATTERN.search(text)
     if founded_match:
         year = int(founded_match.group(1))
         if 1950 <= year <= 2020:
             result["founded_year"] = year
-    elif not result.get("founded_year"):
+
+    if not result.get("founded_year"):
         years = [int(y) for y in YEAR_PATTERN.findall(text) if 1950 <= int(y) <= 2020]
         if years:
             result["founded_year"] = min(years)

@@ -1,66 +1,49 @@
+import asyncio
 import json
-from google import genai
-from google.genai import types
+import google.generativeai as genai
 from app.config import settings
+from app.services.ai.prompts import score_explanation_prompt, outreach_email_prompt
 
-def _get_client():
-    if not settings.gemini_api_key:
-        raise ValueError("GEMINI_API_KEY is not set")
-    return genai.Client(api_key=settings.gemini_api_key)
+_model = None  # reset on each reload
 
-async def generate_score_explanation(company: dict, score_result: dict) -> str:
-    client = _get_client()
-    prompt = f"""
-    Analyze this pre-market SMB acquisition target.
-    
-    Company: {company.get('name')}
-    Industry: {company.get('industry_description')}
-    Founded: {company.get('founded_year')}
-    Location: {company.get('hq_city')}, {company.get('hq_state')}
-    Employees: {company.get('employee_count_low')} - {company.get('employee_count_high')}
-    Revenue Estimate: ${company.get('revenue_estimate_low')} - ${company.get('revenue_estimate_high')}
-    
-    Succession Readiness Score: {score_result['total']}/100 ({score_result['tier']})
-    Score Breakdown:
-    {json.dumps(score_result['breakdown'], indent=2)}
-    
-    Provide a 2-3 paragraph explanation of why this company received this score. Focus on succession readiness, owner exit signals (like business age), and financial/operational fit. Be analytical and professional.
-    """
-    
-    response = client.models.generate_content(
-        model='gemini-1.5-flash',
-        contents=prompt,
-    )
+def _get_model():
+    global _model
+    if _model is None:
+        if not settings.gemini_api_key:
+            raise ValueError("GEMINI_API_KEY is not set")
+        genai.configure(api_key=settings.gemini_api_key)
+        _model = genai.GenerativeModel("gemini-2.5-flash")
+    return _model
+
+
+async def generate_score_explanation(company: dict, score_result) -> str:
+    score_total = score_result.total if hasattr(score_result, 'total') else score_result.get('total')
+    score_tier = score_result.tier if hasattr(score_result, 'tier') else score_result.get('tier')
+    score_breakdown = score_result.breakdown if hasattr(score_result, 'breakdown') else score_result.get('breakdown', {})
+
+    model = _get_model()
+    prompt = score_explanation_prompt(company, score_total, score_tier, score_breakdown)
+    response = await asyncio.to_thread(model.generate_content, prompt)
     return response.text
 
-async def generate_outreach_email(company: dict, score_result: dict) -> dict:
-    if score_result['tier'] not in ("Tier 1", "Tier 2"):
+
+async def generate_outreach_email(company: dict, score_result) -> dict:
+    score_tier = score_result.tier if hasattr(score_result, 'tier') else score_result.get('tier')
+
+    if score_tier not in ("Tier 1", "Tier 2"):
         return {"subject": "", "body": ""}
-        
-    client = _get_client()
-    prompt = f"""
-    You are an M&A partner at a private equity firm reaching out to a business owner.
-    Write a 3-paragraph cold email to the owner. Do not sound salesy. 
-    Frame it as a partnership/succession discussion.
-    
-    Owner Name: {company.get('owner_name', 'Business Owner')}
-    Company: {company.get('name')}
-    Industry: {company.get('industry_description')}
-    Founded: {company.get('founded_year')}
-    Location: {company.get('hq_city')}
-    
-    Respond in JSON format with exactly two keys: "subject" and "body".
-    The body should have proper line breaks.
-    """
-    
-    response = client.models.generate_content(
-        model='gemini-1.5-flash',
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-        ),
-    )
+
+    model = _get_model()
+    prompt = outreach_email_prompt(company)
+
+    def _call():
+        return model.generate_content(
+            contents=prompt,
+            generation_config=genai.GenerationConfig(response_mime_type="application/json"),
+        )
+
+    response = await asyncio.to_thread(_call)
     try:
         return json.loads(response.text)
-    except json.JSONDecodeError:
+    except Exception:
         return {"subject": "Private Equity Inquiry", "body": response.text}
